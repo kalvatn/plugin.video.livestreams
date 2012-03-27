@@ -87,25 +87,51 @@ class Own3dParser(Parser):
         channel_info['ownerLink'] = channel_element.attrib.get('ownerLink')
 
         items_xpath = etree.XPath('//item')
-        items = items_xpath(channel_element)
-
-        rtmp_infos = []
-
-        for item in items:
-            rtmp_info = {}
-            rtmp_url = item.attrib.get('base')
-            if rtmp_url == '${cdn1}' or rtmp_url == '${cdn2}':
-                rtmp_url = 'rtmp://fml.2010.edgecastcdn.net:1935/202010'
-
-            stream_items_xpath = etree.XPath('//stream')
-            for stream_item in stream_items_xpath(item):
-                cdn_path = stream_item.attrib.get('name')
-                rtmp_info[stream_item.attrib.get('label')] = '%s?%s' % (rtmp_url, cdn_path)
-            rtmp_infos.append(rtmp_info)
-
-        rtmp_url = rtmp_infos[0]['HD']
+        item = items_xpath(channel_element)[0]
         
-        stream_url = '%s pageUrl=%s Playpath=%s swfUrl=http://static.ec.own3d.tv/player/Own3dPlayerV2_86.swf swfVfy=True Live=True' % (rtmp_url, channel_info['ownerLink'], rtmp_url.split('?',1)[1])
+        stream_item_xpath = etree.XPath('//stream')
+        stream_item = stream_item_xpath(item)[0]
+        
+        
+        '''
+            possible rtmp servers
+            rtmp://own3duslivefs.fplive.net/own3duslive-live <- almost never works, even though specified in livecfg.
+            rtmp://own3deulivefs.fplive.net/own3deulive-live <- almost never works, even though specified in livecfg.
+            rtmp://fml.2010.edgecastcdn.net:1935/202010 <- pretty stable.
+            rtmp://owned.fc.llnwd.net:1935/owned <- pretty stable.
+            
+            problem is masked servers (${cdn1}, ${cdn2}), right now just guessing on one random edgecast cdn
+            
+            could probably retry on all known servers, but that would be really slow.
+            
+            from http://bogy.mine.nu/sc2/stream2vlc.php , with channel id : 33356 (chaox) , hoster : own3d.tv
+            "C:\rtmpdump-2.3\rtmpdump.exe" -r "rtmp://own3duslivefs.fplive.net/own3duslive-live" -f "WIN 11,1,102,55" -W "http://static.ec.own3d.tv/player/Own3dPlayerV2_86.swf" -p "http://www.own3d.tv/live/33356" --live -y "own3d.aonempatic_33356"
+            
+            -r|--rtmp     url     URL (e.g. rtmp://host[:port]/path)
+            -f|--flashVer string  Flash version string (default: "WIN 10,0,32,18")
+            -W|--swfVfy   url     URL to player swf file, compute hash/size automatically
+            -p|--pageUrl  url     Web URL of played programme
+            -v|--live             Save a live stream, no --resume (seeking) of live streams possible
+            -y|--playpath path    Overrides the playpath parsed from rtmp url
+        '''
+        rtmp = item.attrib.get('base')
+        
+        # override if unknown
+        if '${cdn1}' in rtmp:
+            rtmp = 'rtmp://fml.2010.edgecastcdn.net:1935/202010'
+        elif '${cdn2}' in rtmp:
+            rtmp = 'rtmp://owned.fc.llnwd.net:1935/owned'
+        
+        flashVer = 'WIN 11,1,102,55'
+        #swfVfy   = 'http://static.ec.own3d.tv/player/Own3dPlayerV2_86.swf'
+        pageUrl  = 'http://www.own3d.tv/live/%d' % stream_id
+        #live     = 'True'
+        playpath = stream_item.attrib.get('name')
+        
+        stream_url = '%s pageUrl=%s Playpath=%s swfUrl=http://static.ec.own3d.tv/player/Own3dPlayerV2_86.swf swfVfy=True Live=True' % (rtmp, pageUrl, playpath)
+        
+
+        
         
         stream_object = StreamObject()
         stream_object.title = channel_info['name']
@@ -115,4 +141,7 @@ class Own3dParser(Parser):
         stream_object.rtmp_url = stream_url
         
         return stream_object
+
+
+        
 

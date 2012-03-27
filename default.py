@@ -101,7 +101,7 @@ def play_live_stream(stream_id):
             xbmc.PLAYER_CORE_MPLAYER
             xbmc.PLAYER_CORE_PAPLAYER
     """
-    xbmc.Player(xbmc.PLAYER_CORE_DVDPLAYER).play(stream_object.rtmp_url, item)
+    xbmc.Player(xbmc.PLAYER_CORE_AUTO).play(stream_object.rtmp_url, item)
     return 1
 
 def get_live_streams(game):
