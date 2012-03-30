@@ -1,5 +1,12 @@
 # -*- coding: utf-8 -*-
 
+if __name__ == '__main__':
+    # if run from the commandline on systems that do not have the librariees installed
+    import os, sys
+    ROOT_DIR = os.getcwd()#Addon.getAddonInfo('path')
+    LIB_DIR = os.path.join(ROOT_DIR, 'resources', 'lib')
+    sys.path.append(LIB_DIR)
+
 import urllib2
 from lxml import etree
 
@@ -369,5 +376,5 @@ def test_archive_video():
 
 if __name__ == '__main__':
     #test_game_list()
-    test_archive_videos()
-    #test_archive_video()
+    #test_archive_videos()
+    test_archive_video()
