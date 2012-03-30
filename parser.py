@@ -12,10 +12,14 @@ from beaker.util import parse_cache_config_options
 CACHE_DATA_DIR = '/tmp/plugin.video.livestream/cache/data'
 CACHE_LOCK_DIR = '/tmp/plugin.video.livestream/cache/lock'
 
+
+#TODO: FIXME: add a more regions (forever, weekly, daily, yearly), get_game_list for example could probably be cached
+#             for a substantial length of time (yearly, monthly at most) -> fine tuning
+#             add functions for invalidating to force refresh
 cache_regions.update({
     'short_term':{
         'expire' : 60,
-        'type' : 'file',
+        'type' : 'memory',
         'key_length' : 250,
         'data_dir' : CACHE_DATA_DIR,
         'lock_dir' : CACHE_LOCK_DIR
@@ -38,7 +42,10 @@ cache_regions.update({
 #cache = CacheManager(**parse_cache_config_options(cache_opts))
 
 class StreamObject(object):
-    """docstring for StreamObject"""
+    '''
+        Datacontainer representing a stream item
+        TODO:FIXME: create a complete standardized (non-site specific set of fields)
+    '''
     
     def __init__(self):
         super(StreamObject, self).__init__()
@@ -55,8 +62,14 @@ class StreamObject(object):
         return "<StreamObject : %s, stream_id : %s, game : %s>" % (self.title, str(self.stream_id), self.game)
 
 class Parser(object):
-    """docstring for Parser"""
+    '''
+        Base class for parsers
+
+        Provides utility functions for scraping and parsing
+    '''
+
     USER_AGENT = 'Mozilla/5.0 (Windows; U; Windows NT 5.1; en-GB; rv:1.8.1.14) Gecko/20080404 Firefox/2.0.0.14'
+
     def __init__(self):
         super(Parser, self).__init__()
 
@@ -67,15 +80,28 @@ class Parser(object):
         
         response = urllib2.urlopen(request)
         raw_data = response.read()
+        
         response.close() #TODO:FIXME: needed?
+        
         return raw_data
 
 class Own3dParser(Parser):
-    """docstring for Own3dParser"""
-    LIST_LIVE_STREAMS_URL = "http://api.own3d.tv/live"
+    '''
+        Parser for Own3d.tv
+
+        Provides functions for getting live streams (RTMP) 
+        and archive videos (MPEG4) using the own3d.tv api
+        
+        TODO:FIXME: Should be extracted to a separate module since it's gotten pretty lengthy now.
+    '''
+
+    #TODO:FIXME: Should find a better method to represent these static values, enums or something (or just classes with static fields)
+    LIST_LIVE_STREAMS_URL = 'http://api.own3d.tv/live'
     LIST_GAMES_URL = 'http://www.own3d.tv/browse' 
-    LIST_ARCHIVE_URL = "http://api.own3d.tv/api.php"
-    STREAM_CONFIG_URL = "http://www.own3d.tv/livecfg/%d"
+    LIST_ARCHIVE_URL = 'http://api.own3d.tv/api.php'
+    
+    LIVE_STREAM_CONFIG_URL = 'http://www.own3d.tv/livecfg/%d'
+    ARCHIVE_VIDEO_URL = 'http://www.own3d.tv/video/%d'
     
     TYPE_ALL = 'all'
     TYPE_LIVE = 'live'
@@ -86,6 +112,7 @@ class Own3dParser(Parser):
     SYSTEM_WII = 'Nintendo Wii'
     SYSTEM_XBOX_360 = 'Microsoft XBOX 360'
 
+    #TODO:FIXME: This is where an enum/static data class would be nice.
     SYSTEM_IDS = {
         SYSTEM_PS3 : 3,
         SYSTEM_PC : 1,
@@ -123,12 +150,16 @@ class Own3dParser(Parser):
     SORT_METHOD_VIEWS = 'views'
     SORT_METHOD_RELEVANCE = 'relevance'
     SORT_METHOD_DATE = 'date'
-
     
     def __init__(self):
         super(Own3dParser, self).__init__()
 
     def get_archive_videos(self, archive_type=TYPE_VIDEOS, game_name=None, date=TIME_ANYTIME, sort_by=SORT_METHOD_VIEWS, genre_name=None, system_name=None):
+        game_list = self.get_game_list()
+        if not game_list.has_key(game_name):
+            #TODO:FIXME: create a NoSuchGame/GameNotSupported Exception class
+            raise KeyError('No game found for game name : %s' % game_name)
+
         system_id = None
         if system_name:
             try:
@@ -149,6 +180,7 @@ class Own3dParser(Parser):
             query += '&system=%d' % system_id
         
         if game_name:
+            #TODO:FIXME: refactor to a util class, 'sanitize_for_request' or something
             game_name = game_name.lstrip()
             game_name = game_name.rstrip()
             game_name = game_name.replace(' ', '+')
@@ -162,13 +194,48 @@ class Own3dParser(Parser):
         url = self.LIST_ARCHIVE_URL + query
         print 'url : %s' % url
         
-        raw_html = self.get_response_data(url)
+        raw_xml = self.get_response_data(url)
+        xml_root = etree.XML(raw_xml)
+        items_xpath = etree.XPath('//item')
 
-        return raw_html
+        return raw_xml
+
+    @cache_region('short_term', 'get_archive_video_url')
+    def get_archive_video_url(self, video_id):
+        raw_html = self.get_response_data(self.ARCHIVE_VIDEO_URL % video_id)
+
+        import re
+        #TODO:FIXME: extract regex search to a utility function in Parser
+        # queryString : escape('?7418afca70ba1dc09fb6b6e37c287072169117b285d7dfcce5f8d90b455933d780e9&ec_seek=${start}&ec_rate=350&ec_prebuf=5')
+        query_pattern = re.compile('escape\(\'\?(.+?)&')
+        # HQUrl: 'videos/SD/318000/318858_4edc05c491748_HQ.mp4'
+        hqurl_pattern = re.compile('HQUrl: \'(videos/.*?\\.mp4)\'')
+        # HDUrl: 'videos/HD/227000/227488_4e8ce41b8e3f8_HD.mp4'
+        hdurl_pattern = re.compile('HDUrl: \'(videos/.*?\\.mp4)\'')
         
+        query_string = query_pattern.findall(raw_html)
+        query_string = query_string[0] if len(query_string) > 0 else None
+        
+        hqurl = hqurl_pattern.findall(raw_html)
+        hqurl = hqurl[0] if len(hqurl) > 0 else None
+
+        hdurl = hdurl_pattern.findall(raw_html)
+        hdurl = hdurl[0] if len(hdurl) > 0 else None
+
+        print 'hqurl : %s , hdurl : %s ' % (hqurl, hdurl)
+        mpeg4_url = hdurl if hdurl else hqurl
+        print 'mpeg4_url : %s' % mpeg4_url
+        if not mpeg4_url:
+            #TODO:FIXME: implement logging
+            #log.warn('Could not find video for id : %d' % video_id)
+            return None
+
+        video_url = 'http://vodcdn.ec.own3d.tv/%s?%s' % (mpeg4_url, query_string)
+        return video_url
 
     @cache_region('long_term', 'get_game_list')
     def get_game_list(self):
+        #TODO: FIXME: maybe parse the category anchors as well, will be able to browse by letter/number
         raw_html = self.get_response_data(self.LIST_GAMES_URL)
         
         html_parser = etree.HTMLParser()
@@ -185,7 +252,7 @@ class Own3dParser(Parser):
         xml_root = etree.XML(raw_xml)
         
         stream_list = []
-        
+        #TODO:FIXME: all such xpath searches should be done in a utility function
         channels_xpath = etree.XPath('//item[misc[@game = "%s"]]' % game)
         for items in channels_xpath(xml_root):
             stream_object = StreamObject()
@@ -207,8 +274,9 @@ class Own3dParser(Parser):
         
         return stream_list
 
+    @cache_region('short_term', 'get_rtmp_url')
     def get_rtmp_url(self, stream_id):
-        raw_xml =  self.get_response_data(self.STREAM_CONFIG_URL % stream_id)
+        raw_xml =  self.get_response_data(self.LIVE_STREAM_CONFIG_URL % stream_id)
         xml_root = etree.XML(raw_xml)
 
         channel_xpath = etree.XPath('//channel')
@@ -266,9 +334,6 @@ class Own3dParser(Parser):
         
         stream_url = '%s pageUrl=%s Playpath=%s swfUrl=http://static.ec.own3d.tv/player/Own3dPlayerV2_86.swf swfVfy=True Live=True' % (rtmp, pageUrl, playpath)
         
-
-        
-        
         stream_object = StreamObject()
         stream_object.title = channel_info['name']
         stream_object.game = channel_info['description']
@@ -285,9 +350,24 @@ def test_game_list():
 
 def test_archive_videos():
     # def get_archive_videos(self, archive_type=TYPE_VIDEOS, game_name=None, date=TIME_ANYTIME, sort_by=SORT_METHOD_VIEWS, genre_name=None, system_name=None)
-    archive_videos = own3d_parser.get_archive_videos(game_name='Dota 2')
+    archive_videos = own3d_parser.get_archive_videos(game_name='Age of Conan')
     print archive_videos
+
+def test_archive_video():
+    video_id1 = 318858 # TheOddOne_Maokai_Commentary_Game
+    video_id2 = 318000 # Tarilariran [id:11369] Archive (2011-12-04 12:31:20 - 12:59:55)
+    video_id3 = 227488 # [HD] GC vs Monkey - DOTA 2 - Donkey Kong - Match 2 
+    
+    video_url1 = own3d_parser.get_archive_video_url(video_id1)
+    print video_url1
+    
+    video_url2 = own3d_parser.get_archive_video_url(video_id2)
+    print video_url2
+    
+    video_url3 = own3d_parser.get_archive_video_url(video_id3)
+    print video_url3
 
 if __name__ == '__main__':
     #test_game_list()
     test_archive_videos()
+    #test_archive_video()
