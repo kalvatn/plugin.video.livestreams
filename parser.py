@@ -3,6 +3,40 @@
 import urllib2
 from lxml import etree
 
+from StringIO import StringIO
+
+from beaker.cache import CacheManager
+from beaker.cache import cache_regions, cache_region
+from beaker.util import parse_cache_config_options
+
+CACHE_DATA_DIR = '/tmp/plugin.video.livestream/cache/data'
+CACHE_LOCK_DIR = '/tmp/plugin.video.livestream/cache/lock'
+
+cache_regions.update({
+    'short_term':{
+        'expire' : 60,
+        'type' : 'file',
+        'key_length' : 250,
+        'data_dir' : CACHE_DATA_DIR,
+        'lock_dir' : CACHE_LOCK_DIR
+    },
+    'long_term':{
+        'expire' : 1800,
+        'type' : 'file',
+        'key_length' : 250,
+        'data_dir' : CACHE_DATA_DIR,
+        'lock_dir' : CACHE_LOCK_DIR
+    }
+})
+
+#cache_opts = {
+#    'cache.type': 'file',
+#    'cache.data_dir': CACHE_DATA_DIR,
+#    'cache.lock_dir': CACHE_LOCK_DIR,
+#    'key_length' : 250
+#}
+#cache = CacheManager(**parse_cache_config_options(cache_opts))
+
 class StreamObject(object):
     """docstring for StreamObject"""
     
@@ -26,26 +60,128 @@ class Parser(object):
     def __init__(self):
         super(Parser, self).__init__()
 
-    def get_xml(self, url, postdata = ''):
+    @cache_region('short_term', 'get_response_data')
+    def get_response_data(self, url, postdata = ''):
         request = urllib2.Request(url, postdata)
         request.add_header('User-Agent', self.USER_AGENT)
         
         response = urllib2.urlopen(request)
-        raw_xml = response.read()
-        response.close()
-        return raw_xml
+        raw_data = response.read()
+        response.close() #TODO:FIXME: needed?
+        return raw_data
 
 class Own3dParser(Parser):
     """docstring for Own3dParser"""
-    STREAM_LIST_LIVE_URL = "http://api.own3d.tv/live"
+    LIST_LIVE_STREAMS_URL = "http://api.own3d.tv/live"
+    LIST_GAMES_URL = 'http://www.own3d.tv/browse' 
+    LIST_ARCHIVE_URL = "http://api.own3d.tv/api.php"
     STREAM_CONFIG_URL = "http://www.own3d.tv/livecfg/%d"
+    
+    TYPE_ALL = 'all'
+    TYPE_LIVE = 'live'
+    TYPE_VIDEOS = 'videos'
+
+    SYSTEM_PS3 = 'Sony Playstation 3'
+    SYSTEM_PC = 'PC'
+    SYSTEM_WII = 'Nintendo Wii'
+    SYSTEM_XBOX_360 = 'Microsoft XBOX 360'
+
+    SYSTEM_IDS = {
+        SYSTEM_PS3 : 3,
+        SYSTEM_PC : 1,
+        SYSTEM_WII : 5,
+        SYSTEM_XBOX_360 : 2
+    }
+
+    GENRE_ADVENTURE = 'Adventure'
+    GENRE_MMORPG = 'MMORPG'
+    GENRE_MOBA = 'MOBA'
+    GENRE_RACING = 'Racing'
+    GENRE_ROLE_PLAYING = 'Role Playing'
+    GENRE_SHOOTER = 'Shooter'
+    GENRE_SIMULATION = 'Simulation'
+    GENRE_SPORTS = 'Sports'
+    GENRE_STRATEGY = 'Strategy'
+
+    GENRE_IDS = {
+        GENRE_ADVENTURE : 2,
+        GENRE_MMORPG : 10,
+        GENRE_MOBA : 14,
+        GENRE_RACING : 9,
+        GENRE_ROLE_PLAYING : 4,
+        GENRE_SHOOTER : 1,
+        GENRE_SIMULATION : 6,
+        GENRE_SPORTS : 5,
+        GENRE_STRATEGY : 7
+    }
+
+    TIME_ANYTIME = 'anytime'
+    TIME_TODAY = 'today'
+    TIME_WEEK = 'week'
+    TIME_MONTH = 'month'
+
+    SORT_METHOD_VIEWS = 'views'
+    SORT_METHOD_RELEVANCE = 'relevance'
+    SORT_METHOD_DATE = 'date'
+
     
     def __init__(self):
         super(Own3dParser, self).__init__()
+
+    def get_archive_videos(self, archive_type=TYPE_VIDEOS, game_name=None, date=TIME_ANYTIME, sort_by=SORT_METHOD_VIEWS, genre_name=None, system_name=None):
+        system_id = None
+        if system_name:
+            try:
+                system_id = SYSTEM_IDS[system_name]
+            except KeyError, e:
+                message = 'Could not find system id for system name : %s , exception : %s' % (system_name, str(e))
+                #log.warn(message)
+                #log.error(message, e)
+                print message
+
+        return self._get_archive_videos(archive_type, game_name, date, sort_by, genre_name, system_id)
+
+    @cache_region('short_term', 'get_archive_videos')
+    def _get_archive_videos(self, archive_type, game_name, date, sort_by, genre_name, system_id):
+        query = '?search=&type=%s&time=%s&sort=%s' % (archive_type, date, sort_by)
         
+        if system_id:
+            query += '&system=%d' % system_id
+        
+        if game_name:
+            game_name = game_name.lstrip()
+            game_name = game_name.rstrip()
+            game_name = game_name.replace(' ', '+')
+            game_name = urllib2.unquote(game_name)
+            
+            query += '&search_game=%s' % game_name
+
+        if genre_name:
+            query += '&genre_id=%s' % GENRE_IDS[genre_name]
+
+        url = self.LIST_ARCHIVE_URL + query
+        print 'url : %s' % url
+        
+        raw_html = self.get_response_data(url)
+
+        return raw_html
+        
+
+    @cache_region('long_term', 'get_game_list')
+    def get_game_list(self):
+        raw_html = self.get_response_data(self.LIST_GAMES_URL)
+        
+        html_parser = etree.HTMLParser()
+        html_tree = etree.parse(StringIO(raw_html), html_parser)
+
+        game_links = html_tree.xpath('//a[re:test(string(@href), "^/game/[\w+]*$", "i")]', namespaces={'re' : 'http://exslt.org/regular-expressions'})
+        
+        game_list = { game_link.text : 'http://www.own3d.tv' + game_link.attrib['href'] for game_link in game_links }
+        return game_list
+
+    @cache_region('short_term', 'get_live_streams')
     def get_live_streams(self, game):
-        
-        raw_xml = self.get_xml(self.STREAM_LIST_LIVE_URL)
+        raw_xml = self.get_response_data(self.LIST_LIVE_STREAMS_URL)
         xml_root = etree.XML(raw_xml)
         
         stream_list = []
@@ -72,7 +208,7 @@ class Own3dParser(Parser):
         return stream_list
 
     def get_rtmp_url(self, stream_id):
-        raw_xml =  self.get_xml(self.STREAM_CONFIG_URL % stream_id)
+        raw_xml =  self.get_response_data(self.STREAM_CONFIG_URL % stream_id)
         xml_root = etree.XML(raw_xml)
 
         channel_xpath = etree.XPath('//channel')
@@ -142,6 +278,16 @@ class Own3dParser(Parser):
         
         return stream_object
 
+own3d_parser = Own3dParser()
+def test_game_list():
+    game_list = own3d_parser.get_game_list()
+    print game_list
 
-        
+def test_archive_videos():
+    # def get_archive_videos(self, archive_type=TYPE_VIDEOS, game_name=None, date=TIME_ANYTIME, sort_by=SORT_METHOD_VIEWS, genre_name=None, system_name=None)
+    archive_videos = own3d_parser.get_archive_videos(game_name='Dota 2')
+    print archive_videos
 
+if __name__ == '__main__':
+    #test_game_list()
+    test_archive_videos()
